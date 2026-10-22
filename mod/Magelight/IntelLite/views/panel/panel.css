@@ -1,0 +1,505 @@
+/* IntelLite panel - dark, translucent, Skyrim-ish. Plain CSS, no build step. */
+
+html, body {
+  margin: 0;
+  height: 100%;
+  background: transparent;
+  font-family: "Segoe UI", system-ui, sans-serif;
+  font-size: 14px;
+  color: #e8e2d4;
+  -webkit-user-select: none;
+  user-select: none;
+}
+
+#panel {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  flex-direction: column;
+  background: rgba(20, 16, 11, 0.94);
+  border: 1px solid rgba(201, 164, 92, 0.45);
+  border-radius: 8px;
+  box-shadow: 0 18px 56px rgba(0, 0, 0, 0.65);
+  overflow: hidden;
+}
+
+#panel-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 12px 18px;
+  background: rgba(0, 0, 0, 0.25);
+  border-bottom: 1px solid rgba(201, 164, 92, 0.3);
+}
+
+#panel-title {
+  font-size: 18px;
+  font-weight: 600;
+  letter-spacing: 0.5px;
+  color: #c9a45c;
+}
+
+#tabs {
+  display: flex;
+  gap: 2px;
+  padding: 8px 18px 0;
+  background: rgba(0, 0, 0, 0.15);
+  border-bottom: 1px solid rgba(201, 164, 92, 0.2);
+}
+
+.tab {
+  font: inherit;
+  padding: 8px 18px;
+  color: #948871;
+  background: transparent;
+  border: 1px solid transparent;
+  border-bottom: none;
+  border-radius: 6px 6px 0 0;
+  cursor: pointer;
+}
+
+.tab:hover {
+  color: #e8e2d4;
+}
+
+.tab.active {
+  color: #c9a45c;
+  background: rgba(201, 164, 92, 0.1);
+  border-color: rgba(201, 164, 92, 0.35);
+}
+
+#content {
+  flex: 1 1 auto;
+  padding: 18px;
+  overflow-y: auto;
+}
+
+.tab-panel {
+  display: none;
+}
+
+.tab-panel.active {
+  display: block;
+}
+
+.card {
+  background: rgba(31, 25, 19, 0.9);
+  border: 1px solid rgba(201, 164, 92, 0.25);
+  border-radius: 8px;
+  padding: 16px 18px;
+  margin-bottom: 16px;
+}
+
+.card h2 {
+  margin: 0 0 8px;
+  font-size: 15px;
+  font-weight: 600;
+  color: #c9a45c;
+}
+
+.placeholder {
+  margin: 0 0 12px;
+  color: #948871;
+  font-style: italic;
+}
+
+.row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin: 10px 0 6px;
+}
+
+.label {
+  font-weight: 600;
+  color: #bdb29a;
+}
+
+button {
+  font: inherit;
+  padding: 7px 16px;
+  color: #e8e2d4;
+  background: #131009;
+  border: 1px solid rgba(201, 164, 92, 0.5);
+  border-radius: 5px;
+  cursor: pointer;
+}
+
+button:hover {
+  border-color: #c9a45c;
+  color: #fff;
+}
+
+.list {
+  list-style: none;
+  margin: 8px 0 0;
+  padding: 0;
+}
+
+.list li {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 8px 12px;
+  border-radius: 5px;
+}
+
+.list li.npc:nth-child(odd) {
+  background: rgba(255, 255, 255, 0.03);
+}
+
+.list li.npc:hover {
+  background: rgba(201, 164, 92, 0.12);
+}
+
+.list li.empty {
+  color: #948871;
+  font-style: italic;
+  justify-content: flex-start;
+}
+
+.npc-name {
+  color: #e8e2d4;
+}
+
+.npc-distance {
+  color: #948871;
+  font-variant-numeric: tabular-nums;
+}
+
+.kv {
+  display: grid;
+  grid-template-columns: 180px 1fr;
+  gap: 6px 16px;
+  margin: 12px 0 0;
+}
+
+.kv dt {
+  color: #948871;
+}
+
+.kv dd {
+  margin: 0;
+  color: #e8e2d4;
+}
+
+#content::-webkit-scrollbar {
+  width: 10px;
+}
+
+#content::-webkit-scrollbar-thumb {
+  background: rgba(201, 164, 92, 0.35);
+  border-radius: 5px;
+}
+
+/* Selectable NPC / search rows. */
+.list li.npc {
+  cursor: pointer;
+}
+
+.list li.npc.selected {
+  background: rgba(201, 164, 92, 0.28);
+  outline: 1px solid rgba(201, 164, 92, 0.6);
+}
+
+/* A nearby NPC picked as the fetch target (via its Target button). */
+.list li.npc.target-selected {
+  background: rgba(90, 150, 210, 0.22);
+  box-shadow: inset 0 0 0 1px rgba(90, 150, 210, 0.7);
+}
+
+/* Both at once: keep the gold executor fill, add the blue target ring. */
+.list li.npc.target-selected.selected {
+  background: rgba(201, 164, 92, 0.28);
+  box-shadow: inset 0 0 0 2px rgba(90, 150, 210, 0.85);
+}
+
+/* Nearby rows: fixed columns so distance and the role buttons align on every row. */
+#nearby-list li.npc {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 72px auto auto;
+  align-items: center;
+  column-gap: 10px;
+  justify-content: normal;
+}
+
+#nearby-list .npc-distance {
+  text-align: right;
+}
+
+#nearby-list .exec-btn,
+#nearby-list .target-btn {
+  margin-left: 0;
+}
+
+.npc-name {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.exec-btn,
+.target-btn {
+  padding: 3px 10px;
+  font-size: 12px;
+  margin-left: 10px;
+}
+
+/* The role button of the current pick lights up with the row color:
+   gold for the executor, blue for the target. */
+.exec-btn.active {
+  background: rgba(201, 164, 92, 0.3);
+  border-color: #c9a45c;
+  color: #fff;
+}
+
+.target-btn.active {
+  background: rgba(90, 150, 210, 0.3);
+  border-color: rgba(90, 150, 210, 0.9);
+  color: #fff;
+}
+
+/* Small per-row Exclude (search results) and Remove (blacklist) buttons. */
+.exclude-btn,
+.remove-btn {
+  padding: 3px 10px;
+  font-size: 12px;
+  margin-left: 10px;
+}
+
+/* Exclude reads as a destructive, secondary action: red, not the gold primary. */
+.exclude-btn {
+  color: #e08a8a;
+  border-color: rgba(224, 138, 138, 0.55);
+}
+.exclude-btn:hover {
+  color: #ff9d9d;
+  border-color: #e08a8a;
+}
+
+/* Muted hint under a list header. */
+.legend {
+  margin: 2px 0 0;
+  color: #948871;
+  font-size: 12px;
+}
+
+/* Action dropdown (now a custom control) and target search. */
+input[type="text"],
+input[type="number"] {
+  font: inherit;
+  padding: 6px 10px;
+  color: #e8e2d4;
+  background: #131009;
+  border: 1px solid rgba(201, 164, 92, 0.5);
+  border-radius: 5px;
+  outline: none;
+}
+
+input[type="text"]:focus,
+input[type="number"]:focus {
+  border-color: #c9a45c;
+}
+
+/* Per-action parameter area; only the active action's controls show. Each
+   parameter block takes its own layout rows (never overlapping the list below)
+   with control heights/fonts matching the search and message inputs. */
+.action-params {
+  display: none;
+}
+
+.action-params.active {
+  display: block;
+  margin: 6px 0 12px;
+}
+
+.action-params .row {
+  align-items: center;
+  gap: 12px;
+  margin: 10px 0;
+}
+
+/* The label keeps its intrinsic width; the control takes the rest. */
+.action-params .row .label {
+  flex: 0 0 auto;
+}
+
+.action-params .row input[type="text"] {
+  flex: 1 1 auto;
+  min-width: 0;
+  min-height: 30px;
+}
+
+.action-params .row .dropdown,
+.action-params .row input[type="number"] {
+  flex: 0 0 auto;
+  min-width: 96px;
+  min-height: 30px;
+}
+
+#meet-location {
+  min-height: 30px;
+}
+
+#meet-hours {
+  width: 88px;
+}
+
+/* Settings: the panel-hotkey row (current key + Change). */
+.hotkey-row .hotkey-controls {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.hotkey-name {
+  min-width: 64px;
+  text-align: right;
+  color: #c9a45c;
+  font-variant-numeric: tabular-nums;
+}
+
+.hotkey-hint {
+  color: #d9a3a3;
+  font-size: 12px;
+  margin-left: 8px;
+}
+
+.search-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin: 6px 0 0;
+}
+
+.search-row input[type="text"] {
+  flex: 1 1 auto;
+  min-width: 0;
+  -webkit-user-select: text;
+  user-select: text;
+}
+
+.execute-row {
+  margin-top: 16px;
+  padding-top: 12px;
+  border-top: 1px solid rgba(201, 164, 92, 0.2);
+}
+
+#exec-summary {
+  font-weight: 600;
+  color: #bdb29a;
+}
+
+.message {
+  min-height: 18px;
+  margin-top: 6px;
+  color: #d9a3a3;
+  font-size: 13px;
+}
+
+button:disabled {
+  opacity: 0.45;
+  cursor: default;
+}
+
+/* Active task rows. */
+.list li.task {
+  align-items: center;
+}
+
+.task-main {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+}
+
+.task-title {
+  color: #e8e2d4;
+}
+
+.task-detail {
+  color: #948871;
+  font-size: 13px;
+}
+
+.cancel-btn {
+  padding: 5px 12px;
+}
+
+/* Custom dropdowns (replaces native <select> so the popup is page-drawn,
+   one-at-a-time, sized to the control, and styled like the rest of the panel). */
+.dropdown {
+  position: relative;
+  display: inline-block;
+}
+
+.dropdown .dd-toggle {
+  font: inherit;
+  padding: 6px 10px;
+  min-width: 150px;
+  min-height: 30px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  color: #e8e2d4;
+  background: #131009;
+  border: 1px solid rgba(201, 164, 92, 0.5);
+  border-radius: 5px;
+  cursor: pointer;
+  text-align: left;
+}
+
+.dropdown .dd-toggle:hover {
+  border-color: #c9a45c;
+  color: #fff;
+}
+
+.dropdown .dd-caret {
+  color: #948871;
+  font-size: 11px;
+}
+
+.dropdown .dd-menu {
+  position: absolute;
+  left: 0;
+  top: calc(100% + 2px);
+  z-index: 50;
+  margin: 0;
+  padding: 4px 0;
+  list-style: none;
+  min-width: 100%;
+  background: #131009;
+  border: 1px solid rgba(201, 164, 92, 0.5);
+  border-radius: 5px;
+  box-shadow: 0 10px 28px rgba(0, 0, 0, 0.65);
+  display: none;
+}
+
+.dropdown.open .dd-menu {
+  display: block;
+}
+
+.dropdown .dd-item {
+  padding: 6px 12px;
+  font-size: 14px;
+  white-space: nowrap;
+  color: #e8e2d4;
+  cursor: pointer;
+}
+
+.dropdown .dd-item:hover {
+  background: rgba(201, 164, 92, 0.18);
+}
+
+.dropdown .dd-item.selected {
+  background: rgba(201, 164, 92, 0.28);
+  color: #fff;
+}
+
+/* The Meet-place mode control needs less room than the Action control. */
+#meet-mode-dd .dd-toggle {
+  min-width: 110px;
+}
+

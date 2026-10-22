@@ -1,0 +1,14 @@
+{
+  "name": "intellite",
+  "version-string": "0.1.0",
+  "builtin-baseline": "f451d04d496aa089e294a1a2d799a269788d47ba",
+  "dependencies": [
+    "spdlog",
+    "fmt",
+    "directxtk",
+    "directxmath",
+    "rapidcsv",
+    "xbyak",
+    "nlohmann-json"
+  ]
+}

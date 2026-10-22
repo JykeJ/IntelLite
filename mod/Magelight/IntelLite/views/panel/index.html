@@ -1,0 +1,164 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>IntelLite</title>
+<link rel="stylesheet" href="panel.css" />
+</head>
+<body>
+  <div id="panel">
+    <header id="panel-header">
+      <div id="panel-title">IntelLite</div>
+      <button id="close-btn" type="button">Close</button>
+    </header>
+
+    <nav id="tabs">
+      <button class="tab active" type="button" data-tab="actions">Actions</button>
+      <button class="tab" type="button" data-tab="settings">Settings</button>
+    </nav>
+
+    <main id="content">
+      <section id="tab-actions" class="tab-panel active">
+        <div class="card">
+          <h2>Execute Actions</h2>
+
+          <div class="row">
+            <span class="label">Nearby NPCs</span>
+          </div>
+          <p class="legend">Executor = performs the action. Target = the person it is about.</p>
+          <ul id="nearby-list" class="list">
+            <li class="empty">Scanning...</li>
+          </ul>
+
+          <div class="row">
+            <span class="label">Action</span>
+            <div class="dropdown" id="action-select-dd"></div>
+          </div>
+
+          <!-- deliver: message input -->
+          <div id="deliver-params" class="action-params">
+            <div class="row">
+              <span class="label">Message</span>
+            </div>
+            <div class="search-row">
+              <input id="message-input" type="text" maxlength="200"
+                placeholder="Message to deliver (max 200 chars)" />
+            </div>
+            <div class="row"><span class="label">From (optional)</span></div>
+            <div class="search-row"><input id="message-from" type="text" maxlength="64" placeholder="Sender's name (defaults to the executor)" /></div>
+          </div>
+
+          <!-- meet: place + time -->
+          <div id="meet-params" class="action-params">
+            <div class="row">
+              <span class="label">Meeting place</span>
+              <div class="dropdown" id="meet-mode-dd"></div>
+            </div>
+            <div class="row" id="meet-named-row">
+              <span class="label">Place name</span>
+              <input id="meet-location" type="text" placeholder="e.g. Bannered Mare" />
+            </div>
+            <div class="row">
+              <span class="label">In hours (1-48)</span>
+              <input id="meet-hours" type="number" min="1" max="48" value="2" />
+            </div>
+          </div>
+
+          <!-- assassinate: fee -->
+          <div id="fee-params" class="action-params">
+            <div class="row">
+              <span class="label">Fee (gold, optional)</span>
+              <input id="fee-input" type="number" min="0" value="500" />
+            </div>
+          </div>
+
+          <div id="actor-search">
+            <!-- all actions: executor picker -->
+            <div id="exec-params" class="action-params active">
+              <div class="row">
+                <span class="label">Executor</span>
+              </div>
+              <div class="search-row">
+                <input id="exec-query" type="text" placeholder="Search by name..." />
+                <button id="exec-search-btn" type="button">Search</button>
+              </div>
+              <ul id="exec-search-list" class="list">
+                <li class="empty">No search yet</li>
+              </ul>
+            </div>
+
+            <!-- fetch + deliver + assassinate: target picker -->
+            <div id="target-params" class="action-params active">
+              <div class="row">
+                <span class="label">Target person</span>
+              </div>
+              <div class="search-row">
+                <input id="target-query" type="text" placeholder="Search by name..." />
+                <button id="search-btn" type="button">Search</button>
+              </div>
+              <ul id="search-list" class="list">
+                <li class="empty">No search yet</li>
+              </ul>
+            </div>
+          </div>
+
+          <div class="row execute-row">
+            <span id="exec-summary" class="label">Executor: -  Target: -</span>
+            <button id="execute-btn" type="button">Execute</button>
+          </div>
+          <div id="exec-message" class="message"></div>
+        </div>
+
+        <div class="card">
+          <h2>Active Actions</h2>
+          <ul id="active-list" class="list">
+            <li class="empty">No active actions</li>
+          </ul>
+        </div>
+
+      </section>
+
+      <section id="tab-settings" class="tab-panel">
+        <div class="card">
+          <h2>Settings</h2>
+          <div class="row setting-row">
+            <label for="confirm-toggle">
+              <input id="confirm-toggle" type="checkbox" checked />
+              Ask for confirmation before NPC-initiated actions
+            </label>
+          </div>
+          <div class="row hotkey-row">
+            <span class="label">Panel hotkey</span>
+            <div class="hotkey-controls">
+              <span id="set-hotkey" class="hotkey-name">-</span>
+              <span id="hotkey-hint" class="hotkey-hint"></span>
+            </div>
+          </div>
+          <p class="legend">Hotkey is set in settings.json</p>
+          <dl class="kv">
+            <dt>Mod version</dt><dd id="set-mod-version">-</dd>
+            <dt>SkyrimNet API</dt><dd id="set-skyrimnet-api">-</dd>
+            <dt>Magelight host</dt><dd id="set-magelight-host">-</dd>
+          </dl>
+        </div>
+
+        <div class="card">
+          <h2>Blacklisted target names</h2>
+          <p class="legend">NPCs the AI will never resolve as a target (by base editorid).</p>
+          <ul id="blacklist-list" class="list">
+            <li class="empty">No blacklisted names</li>
+          </ul>
+          <div class="search-row">
+            <input id="blacklist-input" type="text"
+              placeholder="NPC editorid (e.g. JarlElisifTheFair)" />
+            <button id="blacklist-add-btn" type="button">Add</button>
+          </div>
+        </div>
+      </section>
+    </main>
+  </div>
+
+  <script src="panel.js"></script>
+</body>
+</html>

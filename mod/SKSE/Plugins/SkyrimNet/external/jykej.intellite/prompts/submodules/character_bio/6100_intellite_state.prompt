@@ -1,0 +1,99 @@
+{% if is_plugin_loaded("IntelLiteData.esp") and (render_mode == "full" or render_mode == "thoughts" or render_mode == "dialogue_target") %}
+{% set intellite_meeting = papyrus_util("GetStringValue", actorUUID, "IntelLite_Meeting", "") %}
+{% set intellite_meeting_time = papyrus_util("GetFloatValue", actorUUID, "IntelLite_MeetingTime", 0.0) %}
+{% set intellite_contract = papyrus_util("GetStringValue", actorUUID, "IntelLite_Contract", "") %}
+{% set intellite_survivor = papyrus_util("GetStringValue", actorUUID, "IntelLite_Survivor", "") %}
+{% set intellite_survivor_time = papyrus_util("GetFloatValue", actorUUID, "IntelLite_SurvivorTime", 0.0) %}
+{% set msg_texts = papyrus_util("GetStringList", actorUUID, "IntelLite_MsgText") %}
+{% set msg_froms = papyrus_util("GetStringList", actorUUID, "IntelLite_MsgFrom") %}
+{% set msg_vias = papyrus_util("GetStringList", actorUUID, "IntelLite_MsgVia") %}
+{% set msg_times = papyrus_util("GetFloatList", actorUUID, "IntelLite_MsgTime") %}
+{% set intellite_message = papyrus_util("GetStringValue", actorUUID, "IntelLite_MessageText", "") %}
+{% set intellite_message_from = papyrus_util("GetStringValue", actorUUID, "IntelLite_MessageFrom", "") %}
+{% set intellite_message_via = papyrus_util("GetStringValue", actorUUID, "IntelLite_MessageVia", "") %}
+{% set intellite_message_time = papyrus_util("GetFloatValue", actorUUID, "IntelLite_MessageTime", 0.0) %}
+{% set msg_days_passed_now = get_global_value("GameDaysPassed") %}
+{% set m_texts = msg_texts %}
+{% set m_froms = msg_froms %}
+{% set m_vias = msg_vias %}
+{% set m_times = msg_times %}
+{% set msg_max_age_days = 14.0 %}
+{% if length(m_times) == 0 and intellite_message != "" %}
+{% set m_texts = [] %}
+{% set m_froms = [] %}
+{% set m_vias = [] %}
+{% set m_times = [] %}
+{% set _ = m_texts.append(intellite_message) %}
+{% set _ = m_froms.append(intellite_message_from) %}
+{% set _ = m_vias.append(intellite_message_via) %}
+{% set _ = m_times.append(intellite_message_time) %}
+{% endif %}
+{% set msg_count = length(m_times) %}
+{% set msg_header_shown = false %}
+{% for _msg_time in m_times %}
+{% set msg_idx = msg_count - 1 - loop.index %}
+{% if msg_idx < length(m_texts) and msg_idx < length(m_froms) and msg_idx < length(m_vias) %}
+{% set msg_text = at(m_texts, msg_idx) %}
+{% set msg_from = at(m_froms, msg_idx) %}
+{% set msg_via = at(m_vias, msg_idx) %}
+{% set msg_days_passed = msg_days_passed_now - _msg_time %}
+{% if msg_text != "" and (_msg_time <= 0.0 or msg_days_passed <= msg_max_age_days) %}
+{% if not msg_header_shown %}
+## Messages you've got
+{% set msg_header_shown = true %}
+{% endif %}
+{% if _msg_time > 0.0 %}
+{% set msg_age_days = round(msg_days_passed, 0) %}
+{% set msg_age_hours = round(msg_days_passed * 24.0, 0) %}
+{% if msg_age_days > 0 %}
+{% set msg_age = to_string(msg_age_days) + " day(s) ago" %}
+{% else if msg_age_hours > 0 %}
+{% set msg_age = to_string(msg_age_hours) + " hour(s) ago" %}
+{% else %}
+{% set msg_age = "less than an hour ago" %}
+{% endif %}
+{% set msg_age_suffix = " " + msg_age %}
+{% else %}
+{% set msg_age_suffix = "" %}
+{% endif %}
+{{ msg_from }} sent you a message{% if msg_via != "" %} (carried by {{ msg_via }}){% endif %}{{ msg_age_suffix }}: "{{ msg_text }}".
+{% endif %}
+{% endif %}
+{% endfor %}
+{% if intellite_meeting != "" %}
+## Meeting
+{% set meeting_days_left = intellite_meeting_time - msg_days_passed_now %}
+{% if intellite_meeting_time > 0.0 and meeting_days_left > 0.0 %}
+{% set meeting_hours_left = round(meeting_days_left * 24.0, 0) %}
+{% if meeting_hours_left > 0 %}
+{{ decnpc(actorUUID).name }} has agreed to meet {{ player.name }} at {{ intellite_meeting }} in {{ to_string(meeting_hours_left) }} hour(s).
+{% else %}
+{{ decnpc(actorUUID).name }} has agreed to meet {{ player.name }} at {{ intellite_meeting }} in less than an hour.
+{% endif %}
+{% else %}
+{{ decnpc(actorUUID).name }} has agreed to meet {{ player.name }} at {{ intellite_meeting }}.
+{% endif %}
+{% endif %}
+{% if intellite_contract != "" %}
+## Assassination
+{{ decnpc(actorUUID).name }} has taken a contract to kill {{ intellite_contract }}.
+{% endif %}
+{% if intellite_survivor != "" %}
+{% if intellite_survivor_time > 0.0 %}
+{% set survivor_days_passed = msg_days_passed_now - intellite_survivor_time %}
+{% set survivor_age_days = round(survivor_days_passed, 0) %}
+{% set survivor_age_hours = round(survivor_days_passed * 24.0, 0) %}
+{% if survivor_age_days > 0 %}
+{% set survivor_age = to_string(survivor_age_days) + " day(s) ago" %}
+{% else if survivor_age_hours > 0 %}
+{% set survivor_age = to_string(survivor_age_hours) + " hour(s) ago" %}
+{% else %}
+{% set survivor_age = "less than an hour ago" %}
+{% endif %}
+{% else %}
+{% set survivor_age = "recently" %}
+{% endif %}
+## Assassination attempt
+You were the target of an assassination attempt {{ survivor_age }}. The attempt failed and only managed to injure you slightly. You do not know who was behind it, and you never saw who tried to kill you.
+{% endif %}
+{% endif %}

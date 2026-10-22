@@ -1,0 +1,84 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>IntelLite</title>
+<link rel="stylesheet" href="prompt.css" />
+</head>
+<body>
+  <div id="prompt-card">
+    <header id="prompt-header">
+      <div id="prompt-title">IntelLite</div>
+    </header>
+
+    <!-- Screen 1: confirm -->
+    <section id="screen-confirm" class="screen active">
+      <p id="prompt-text" class="prompt-text">...</p>
+      <div class="buttons">
+        <button id="agree-btn" type="button" class="primary">Agree</button>
+        <button id="change-btn" type="button">Change</button>
+        <button id="decline-btn" type="button">Decline</button>
+      </div>
+    </section>
+
+    <!-- Screen 2: change -->
+    <section id="screen-change" class="screen">
+      <div id="change-target" class="change-block">
+        <div class="row"><span class="label">Target person</span></div>
+        <div class="search-row">
+          <input id="prompt-query" type="text" placeholder="Search by name..." />
+          <button id="prompt-search-btn" type="button">Search</button>
+        </div>
+        <ul id="prompt-results" class="list"><li class="empty">No search yet</li></ul>
+
+        <div class="row"><span class="label">Nearby</span></div>
+        <ul id="prompt-candidates" class="list"><li class="empty">No nearby people</li></ul>
+      </div>
+
+      <!-- deliver: message editor (prefilled with the AI's message) -->
+      <div id="change-message" class="change-block">
+        <div class="row"><span class="label">Message</span></div>
+        <div class="search-row">
+          <input id="prompt-message" type="text" maxlength="200"
+            placeholder="Message to deliver (max 200 chars)" />
+        </div>
+        <div class="row"><span class="label">From (optional)</span></div>
+        <div class="search-row"><input id="prompt-message-from" type="text" maxlength="64" placeholder="Sender's name (defaults to the executor)" /></div>
+      </div>
+
+      <div id="change-meet" class="change-block">
+        <div class="row">
+          <span class="label">Meeting place</span>
+          <select id="prompt-location-mode">
+            <option value="Here">Here</option>
+            <option value="Named">Named</option>
+          </select>
+        </div>
+        <div class="row" id="prompt-location-row">
+          <span class="label">Place name</span>
+          <input id="prompt-location" type="text" placeholder="e.g. Bannered Mare" />
+        </div>
+        <div class="row">
+          <span class="label">In hours (1-48)</span>
+          <input id="prompt-hours" type="number" min="1" max="48" value="2" />
+        </div>
+      </div>
+
+      <!-- assassinate: fee editor -->
+      <div id="change-fee" class="change-block">
+        <div class="row">
+            <span class="label">Fee (gold, optional)</span>
+            <input id="prompt-fee" type="number" min="0" value="500" />
+        </div>
+      </div>
+
+      <div class="buttons">
+        <button id="back-btn" type="button">Back</button>
+      </div>
+    </section>
+  </div>
+
+  <script src="prompt.js"></script>
+</body>
+</html>

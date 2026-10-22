@@ -1,0 +1,17 @@
+{
+  "id": "jykej.intellite",
+  "type": "bundle",
+  "title": "IntelLite",
+  "tagline": "SkyrimNet actions for NPCs.",
+  "description": "IntelLite is a SkyrimNet companion SKSE plugin. It comes with 5 actions - Fetch Person, Deliver Message, Meet Later, Assassinate and Cancel All - and the character-bio awareness submodule that lets an NPC know its own IntelLite meetings, contracts and messages. The four targeted actions can also be issued from the in-game panel.",
+  "author": "jykej",
+  "tags": [
+    "actions",
+    "tasks"
+  ],
+  "nsfw": false,
+  "min_skyrimnet_version": "0.25.0",
+  "mods": [],
+  "external_url": "https://github.com/JykeJ/IntelLite/releases",
+  "version": "0.1.0"
+}
