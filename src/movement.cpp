@@ -31,6 +31,7 @@ namespace intellite::movement
 		constexpr RE::FormID  kApproachLocalID = 0x807; // IntelLite_AssassinApproachPackage
 		constexpr RE::FormID  kWalkPackageLocalID = 0x808; // IntelLite_TargetWalkPackage
 		constexpr RE::FormID  kSwingPackageLocalID = 0x809; // IntelLite_SwingPackage
+		constexpr RE::FormID  kHoldLocalID = 0x80A; // IntelLite_AssassinHoldPackage
 
 		constexpr const char* kActorUtilClass         = "ActorUtil";
 		constexpr const char* kAddPackageOverrideFn   = "AddPackageOverride";
@@ -55,6 +56,7 @@ namespace intellite::movement
 			RE::TESPackage* approach = nullptr;
 			RE::TESPackage* walk = nullptr;
 			RE::TESPackage* swing = nullptr;
+			RE::TESPackage* hold = nullptr;
 		};
 
 		// Resolved once for the process; the log line fires exactly once.
@@ -69,17 +71,22 @@ namespace intellite::movement
 					f.approach = dataHandler->LookupForm<RE::TESPackage>(kApproachLocalID, kDataPlugin);
 					f.walk = dataHandler->LookupForm<RE::TESPackage>(kWalkPackageLocalID, kDataPlugin);
 					f.swing = dataHandler->LookupForm<RE::TESPackage>(kSwingPackageLocalID, kDataPlugin);
+					f.hold = dataHandler->LookupForm<RE::TESPackage>(kHoldLocalID, kDataPlugin);
 				}
 				if (f.keyword && f.package) {
 					// Match the run package's interrupt-blocking flags (0xFEFF) on the
-					// sneak approach and target walk packages so corpses, hellos, or
-					// world interactions cannot interrupt an active approach or walk.
+					// sneak approach, target walk, and assassin hold packages so corpses,
+					// hellos, or world interactions cannot interrupt an active approach,
+					// walk, or stance hold.
 					const auto interruptFlags = f.package->packData.foBehaviorFlags;
 					if (f.approach) {
 						f.approach->packData.foBehaviorFlags = interruptFlags;
 					}
 					if (f.walk) {
 						f.walk->packData.foBehaviorFlags = interruptFlags;
+					}
+					if (f.hold) {
+						f.hold->packData.foBehaviorFlags = interruptFlags;
 					}
 					logs::info("movement: IntelLiteData.esp loaded - package travel enabled");
 					if (!f.sandbox) {
@@ -93,6 +100,9 @@ namespace intellite::movement
 					}
 					if (!f.swing) {
 						logs::warn("movement: swing package (0x809) missing - the essential swing is skipped");
+					}
+					if (!f.hold) {
+						logs::warn("movement: assassin hold package (0x80A) missing - staged assassination stance hold disabled");
 					}
 				} else {
 					logs::info("movement: IntelLiteData.esp missing - simulation only");
@@ -174,6 +184,7 @@ namespace intellite::movement
 		removeOther(forms.approach);
 		removeOther(forms.walk);
 		removeOther(forms.swing);
+		removeOther(forms.hold);
 
 		// Push the package as an override (priority 100, flags 1), and force an
 		// AI-resetting EvaluatePackage once the VM finishes executing
@@ -223,12 +234,14 @@ namespace intellite::movement
 				logs::warn("movement: RemovePackageOverride dispatch failed for {:08X}", mover->GetFormID());
 			}
 		};
-		RE::TESPackage* lastPkg = forms.swing ? forms.swing
-			: (forms.walk ? forms.walk : (forms.approach ? forms.approach : forms.package));
+		RE::TESPackage* lastPkg = forms.hold ? forms.hold
+			: (forms.swing ? forms.swing
+				: (forms.walk ? forms.walk : (forms.approach ? forms.approach : forms.package)));
 		removeOverride(forms.package, forms.package == lastPkg);
 		removeOverride(forms.approach, forms.approach == lastPkg);
 		removeOverride(forms.walk, forms.walk == lastPkg);
 		removeOverride(forms.swing, forms.swing == lastPkg);
+		removeOverride(forms.hold, forms.hold == lastPkg);
 
 		mover->EvaluatePackage(true, false);
 	}
@@ -257,6 +270,7 @@ namespace intellite::movement
 		removeOther(forms.package);
 		removeOther(forms.approach);
 		removeOther(forms.walk);
+		removeOther(forms.hold);
 
 		// Push the swing package as an override (priority 100, flags 1).
 		auto* pkgArgs = RE::MakeFunctionArguments(
@@ -309,6 +323,83 @@ namespace intellite::movement
 		logs::info("movement: StopSwing {:08X}", attacker->GetFormID());
 	}
 
+	bool StartAssassinHold(RE::Actor* actor, RE::TESObjectREFR* target)
+	{
+		if (!actor || !target || actor == target) {
+			return false;
+		}
+
+		const auto& forms = ResolveForms();
+		if (!forms.keyword || !forms.hold) {
+			return false;
+		}
+
+		// Point the keyworded linked ref at the target synchronously.
+		actor->extraList.SetLinkedRef(target, forms.keyword);
+
+		auto removeOther = [actor](RE::TESPackage* a_other) {
+			if (!a_other) return;
+			auto* args = RE::MakeFunctionArguments(
+				static_cast<RE::Actor*>(actor),
+				static_cast<RE::TESPackage*>(a_other));
+			(void)vm::DispatchStatic(kActorUtilClass, kRemovePackageOverrideFn, args);
+		};
+		removeOther(forms.package);
+		removeOther(forms.approach);
+		removeOther(forms.walk);
+		removeOther(forms.swing);
+
+		// Push the hold package as an override (priority 100, flags 1).
+		auto* pkgArgs = RE::MakeFunctionArguments(
+			static_cast<RE::Actor*>(actor),
+			static_cast<RE::TESPackage*>(forms.hold),
+			static_cast<std::int32_t>(kTravelPriority),
+			static_cast<std::int32_t>(kTravelFlags));
+		if (!vm::DispatchStaticWithEval(kActorUtilClass, kAddPackageOverrideFn, pkgArgs,
+				actor->GetFormID(), true)) {
+			actor->extraList.SetLinkedRef(nullptr, forms.keyword);
+			LogStartFailureOnce();
+			return false;
+		}
+
+		actor->EvaluatePackage(true, true);
+		logs::info("movement: StartAssassinHold {:08X} -> {:08X}", actor->GetFormID(), target->GetFormID());
+		return true;
+	}
+
+	RE::FormID AssassinHoldPackageFormID()
+	{
+		const auto& forms = ResolveForms();
+		return forms.hold ? forms.hold->GetFormID() : 0;
+	}
+
+	void StopAssassinHold(RE::Actor* actor)
+	{
+		if (!actor) {
+			return;
+		}
+
+		const auto& forms = ResolveForms();
+		if (!forms.keyword || !forms.hold) {
+			return;
+		}
+
+		// Clear the keyworded linked ref synchronously and remove only the
+		// hold package override, evaluating once the VM finishes the removal.
+		actor->extraList.SetLinkedRef(nullptr, forms.keyword);
+
+		auto* pkgArgs = RE::MakeFunctionArguments(
+			static_cast<RE::Actor*>(actor),
+			static_cast<RE::TESPackage*>(forms.hold));
+		if (!vm::DispatchStaticWithEval(kActorUtilClass, kRemovePackageOverrideFn, pkgArgs,
+				actor->GetFormID(), false)) {
+			logs::warn("movement: RemovePackageOverride(hold) dispatch failed for {:08X}", actor->GetFormID());
+		}
+
+		actor->EvaluatePackage(true, false);
+		logs::info("movement: StopAssassinHold {:08X}", actor->GetFormID());
+	}
+
 	bool StartSandbox(RE::Actor* actor, RE::TESObjectREFR* anchor)
 	{
 		if (!actor || !anchor) {
@@ -322,6 +413,13 @@ namespace intellite::movement
 
 		// Point the keyworded linked ref at the sandbox anchor synchronously.
 		actor->extraList.SetLinkedRef(anchor, forms.keyword);
+
+		if (forms.hold) {
+			auto* rmArgs = RE::MakeFunctionArguments(
+				static_cast<RE::Actor*>(actor),
+				static_cast<RE::TESPackage*>(forms.hold));
+			(void)vm::DispatchStatic(kActorUtilClass, kRemovePackageOverrideFn, rmArgs);
+		}
 
 		// Push the sandbox package as an override (priority 95, flags 1).
 		auto* pkgArgs = RE::MakeFunctionArguments(

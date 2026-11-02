@@ -23,7 +23,8 @@
 //
 // The records live in IntelLiteData.esp (keyword 000800, meet spots
 // 000801-000804, travel package 000805, sandbox package 000806, sneak approach
-// package 000807, target walk package 000808, swing package 000809). The
+// package 000807, target walk package 000808, swing package 000809, assassin
+// hold package 00080A). The
 // package is a clone of IntelEngine's travel package: vanilla Travel template
 // (016FAA) with location = the keyword-linked reference and PreferredSpeed Run;
 // its UnlockDoorsAtPackageStart flag is unset so a locked building cannot be
@@ -90,6 +91,23 @@ namespace intellite::movement
 	// package override, clear the keyworded linked ref, then force
 	// EvaluatePackage(true, false). Game thread only.
 	void StopSwing(RE::Actor* attacker);
+
+	// Start `actor` holding the assassination stance near `target`: point the
+	// keyworded linked ref at the target, push the assassin hold package
+	// override (00080A, priority 100, flags 1: Run + AlwaysSneak + WeaponDrawn,
+	// holds within 150 u and follows beyond it), then force
+	// EvaluatePackage(true, true). Game thread only. Returns true iff the
+	// forms resolved and both dispatches were accepted.
+	bool StartAssassinHold(RE::Actor* actor, RE::TESObjectREFR* target);
+
+	// The resolved assassin hold package's FormID, or 0 when the record did
+	// not resolve. Game-thread only (reads the cached ResolveForms result).
+	RE::FormID AssassinHoldPackageFormID();
+
+	// Release an actor previously started with StartAssassinHold: remove only
+	// the hold package override, clear the keyworded linked ref, then force
+	// EvaluatePackage(true, false). Game thread only.
+	void StopAssassinHold(RE::Actor* actor);
 
 	// Start `actor` sandboxing around `anchor`: set the linked ref at the
 	// anchor, push the sandbox package override (priority 95, flags 1), then

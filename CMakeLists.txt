@@ -1,6 +1,6 @@
 cmake_minimum_required(VERSION 3.21)
 
-project(IntelLite VERSION 0.1.0 LANGUAGES CXX)
+project(IntelLite VERSION 0.1.1 LANGUAGES CXX)
 
 # NG's test suite defaults ON and would otherwise demand Catch2.
 set(BUILD_TESTS OFF CACHE BOOL "" FORCE)

@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.1.1
+
+* Improved the staged non-essential assassination path with a dedicated hold package, collision handling around the scene, and a retry/teleport recovery for refused attempts.
+
 ## 0.1.0
 
 First public release.

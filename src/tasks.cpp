@@ -140,7 +140,15 @@ namespace intellite::tasks
 		constexpr float kKillSettleSeconds = 0.8f;       // stillness between the pair staging and the killmove dispatch (the engine needs a settled pair)
 		constexpr float kKillEngageWaitSeconds = 1.2f;   // after a dispatch, how long the engine's killmove state may take to appear before the attempt is declared refused
 		constexpr float kKillMaxPreDispatchDistance = 400.0f;  // re-stage once when the settle drifted the pair past this
-		constexpr int   kKillMaxDispatches = 6;          // total killmove dispatches per scene (1 + up to 5 re-stage retries)
+		constexpr int   kKillMaxDispatches = 6;          // total killmove dispatches per scene (1 + up to 5 re-stage retries; legacy furniture path)
+		constexpr int   kKillInitialAttempts = 3;        // non-furniture staged schedule: initial close-in attempts on arrival
+		constexpr int   kKillDriveAttempts = 2;          // non-furniture staged schedule: attempts after each 2 s drive/wait round
+		constexpr int   kKillDriveRounds = 2;            // non-furniture staged schedule: number of 2 s rounds between attempt bursts
+		constexpr float kKillDriveSeconds = 2.0f;        // duration of each target-drive/wait round between attempt bursts
+		constexpr float kStanceReassertSeconds = 2.0f;   // watchdog interval for keeping IntelLite_AssassinHoldPackage running on the executor
+		constexpr bool  kSuspendHoldForDispatch = false; // false = keep the hold package through PlayIdleWithTarget so AlwaysSneak stays active
+		constexpr bool  kTryCollisionFilter = true;      // set CFilter::kNoCollision (bit 14) on bumpedCharCollisionObject for the agent/target pair
+		constexpr bool  kTryRetryTeleport = true;        // teleport the target behind the executor on the final retry-drive round
 		constexpr float kSwingSeconds = 45.0f;           // hard cap for the one-package essential run: the swing package can take seconds to engage on an occupied actor, so this only bounds a run that never engages or attacks; the release normally fires when the attack completes
 		constexpr float kSwingReissueSeconds = 2.5f;     // re-assert the swing package this often while it is not yet the running package
 		constexpr float kSwingAttackHoldSeconds = 2.5f;  // release at most this long after the attack was first seen - bounds a stand-staring tail if the attack state lingers
@@ -382,6 +390,21 @@ namespace intellite::tasks
 			float         swingCheckReal = 0.0f;        // runtime-only: the next swing diagnostic log's deadline (essential-target swing - runtime only, not serialized)
 			int           swingReissues = 0;             // runtime-only: how many times the swing package has been re-issued (essential-target swing - runtime only, not serialized)
 			float         swingReissueReal = 0.0f;       // runtime-only: the next swing re-issue deadline (essential-target swing - runtime only, not serialized)
+			bool          stanceHeld = false;            // runtime-only: the executor holds IntelLite_AssassinHoldPackage for the scene
+			bool          holdSuspended = false;         // runtime-only: the hold package is temporarily suspended for a killmove dispatch
+			float         stanceReassertReal = 0.0f;     // runtime-only: next keep-alive check for the executor's hold package
+			bool          killRetryActive = false;       // runtime-only: non-furniture 3+2+2 attempt/drive schedule is active
+			int           killRetryAttemptsLeft = 0;     // runtime-only: dispatches remaining in the current burst
+			int           killRetryDriveRoundsLeft = 0;  // runtime-only: 2 s drive/wait rounds remaining after this burst
+			bool          killRetryDriving = false;      // runtime-only: currently in a 2 s inter-burst drive/wait window
+			float         killRetryDriveEndReal = 0.0f;  // runtime-only: real-second end of the current 2 s drive/wait window
+			bool          killDrivePkgActive = false;    // runtime-only: the target's walk-toward-player package is running for a retry drive
+			RE::hkRefPtr<RE::hkpRigidBody> agentCollisionBody;   // runtime-only: the target's body when the executor bumps it
+			RE::hkRefPtr<RE::hkpRigidBody> targetCollisionBody;  // runtime-only: the executor's body when the target bumps it
+			bool          agentCollisionMarked = false;  // runtime-only: we set CFilter::kNoCollision on agentCollisionBody
+			bool          targetCollisionMarked = false; // runtime-only: we set CFilter::kNoCollision on targetCollisionBody
+			bool          killRetryTeleport = false;        // runtime-only: the pending retry-drive round will teleport the target behind the executor
+			bool          killRetryTeleportApplied = false; // runtime-only: the final retry-drive round's teleport is waiting out its 2 s beat
 			std::shared_ptr<KillVmResult> killVmResult;  // runtime-only: per-task deferred PlayIdleWithTarget result
 		};
 
@@ -403,6 +426,7 @@ namespace intellite::tasks
 		// below, the queued cancels, and the confirmation atomic.
 		std::vector<Task>          g_tasks;
 		std::vector<std::uint32_t> g_pendingHoldReleases;  // game thread only: saved assassinate targets whose SetDontMove/SetRestrained hold must be cleared after a load
+		std::vector<std::uint32_t> g_pendingStanceReleases;  // game thread only: dropped assassinate executors whose travel/hold override must be cleared after a load
 		// Game thread only: kill daggers spawned by tasks that were DROPPED at load
 		// (their runtime record is gone, so the dagger must be removed without it).
 		struct PendingWeapon { std::uint32_t agent = 0; std::uint32_t weapon = 0; };
@@ -2455,15 +2479,18 @@ namespace intellite::tasks
 		}
 
 		// Turn a pair to face each other for the kill scene. When the agent is
-		// behind the target (a backstab) the target is left facing away. Game
-		// thread only.
+		// behind the target (a backstab) the target is turned to face away from
+		// the agent so its back is to the blade. Game thread only.
 		void FaceForKill(RE::Actor* a_agent, RE::Actor* a_target, bool a_agentBehind)
 		{
 			if (!a_agent || !a_target) return;
 			const auto ap = a_agent->GetPosition();
 			const auto tp = a_target->GetPosition();
-			a_agent->SetHeading(static_cast<float>(std::atan2(tp.x - ap.x, tp.y - ap.y)));
-			if (!a_agentBehind) {
+			const float toTarget = static_cast<float>(std::atan2(tp.x - ap.x, tp.y - ap.y));
+			a_agent->SetHeading(toTarget);
+			if (a_agentBehind) {
+				a_target->SetHeading(toTarget);
+			} else {
 				a_target->SetHeading(static_cast<float>(std::atan2(ap.x - tp.x, ap.y - tp.y)));
 			}
 		}
@@ -2617,16 +2644,18 @@ namespace intellite::tasks
 
 			const char* idle = (mh && mh->lastIdlePlayed)
 				? mh->lastIdlePlayed->GetFormEditorID() : nullptr;
+			const float angDeg = a_actor->GetAngleZ() * 57.2957795f;
 
-			char buf[256]{};
+			char buf[288]{};
 			std::snprintf(buf, sizeof(buf),
-				"sneak=%d move=%d cmbt=%d km=%d life=%d sit=%d furn=%08X pkg=%08X/%s idle=%s kmT=%.1f dkT=%.1f kq=%d dk=%d",
+				"sneak=%d move=%d cmbt=%d km=%d life=%d sit=%d ang=%.0f furn=%08X pkg=%08X/%s idle=%s kmT=%.1f dkT=%.1f kq=%d dk=%d",
 				a_actor->IsSneaking() ? 1 : 0,
 				a_actor->IsMoving() ? 1 : 0,
 				a_actor->IsInCombat() ? 1 : 0,
 				a_actor->IsInKillMove() ? 1 : 0,
 				static_cast<int>(a_actor->AsActorState()->GetLifeState()),
 				a_actor->AsActorState()->IsSitting() ? 1 : 0,
+				angDeg,
 				furniture,
 				pkgForm, pkgId,
 				(idle && *idle) ? idle : "-",
@@ -2642,8 +2671,18 @@ namespace intellite::tasks
 			const float dist = (a_agent && a_target)
 				? a_agent->GetPosition().GetDistance(a_target->GetPosition())
 				: -1.0f;
-			logs::info("task {}: killmove {} - dist={:.0f} agent[{:08X}] {} target[{:08X}] {}",
-				a_task.id, a_phase, dist,
+			float relDeg = 0.0f;
+			float bearingDeg = 0.0f;
+			if (a_agent && a_target) {
+				const auto ap = a_agent->GetPosition();
+				const auto tp = a_target->GetPosition();
+				bearingDeg = static_cast<float>(std::atan2(tp.x - ap.x, tp.y - ap.y)) * 57.2957795f;
+				relDeg = (a_target->GetAngleZ() - a_agent->GetAngleZ()) * 57.2957795f;
+				while (relDeg > 180.0f) relDeg -= 360.0f;
+				while (relDeg < -180.0f) relDeg += 360.0f;
+			}
+			logs::info("task {}: killmove {} - dist={:.0f} relAng={:.0f}deg bearing={:.0f}deg agent[{:08X}] {} target[{:08X}] {}",
+				a_task.id, a_phase, dist, relDeg, bearingDeg,
 				a_agent ? a_agent->GetFormID() : 0, ActorKillState(a_agent),
 				a_target ? a_target->GetFormID() : 0, ActorKillState(a_target));
 		}
@@ -3154,6 +3193,157 @@ namespace intellite::tasks
 				a_task.id, a_task.targetName);
 		}
 
+		// Hook-free bumped-body collision filter toggle
+		// (bhkCharacterController::bumpedCharCollisionObject ->
+		// hkpCollidable::broadPhaseHandle.collisionFilterInfo CFilter bit 14
+		// QNoCollision/SetNoCollision) for a staged mortal assassination scene.
+		// When the target bumps the executor (or the executor bumps the target),
+		// the bumped rigid body's CFilter kNoCollision bit is set and held in a
+		// task-owned hkRefPtr<hkpRigidBody>, re-asserted each scene tick, and
+		// cleared on scene end / cancel / abort / load. Never touches a body
+		// that already carried the bit (another mod), and never clears a bit we
+		// did not set. Game thread only.
+		RE::hkRefPtr<RE::hkpRigidBody> BumpedBody(RE::Actor* a_actor)
+		{
+			if (!a_actor) return {};
+			auto* ctrl = a_actor->GetCharController();
+			return ctrl ? ctrl->bumpedCharCollisionObject : RE::hkRefPtr<RE::hkpRigidBody>{};
+		}
+
+		bool BodyNoCollision(RE::hkpRigidBody* a_body)
+		{
+			return a_body && a_body->collidable.broadPhaseHandle.collisionFilterInfo.QNoCollision();
+		}
+
+		void SetBodyNoCollision(RE::hkpRigidBody* a_body, bool a_noCollision)
+		{
+			if (!a_body) return;
+			a_body->collidable.broadPhaseHandle.collisionFilterInfo.SetNoCollision(a_noCollision);
+		}
+
+		void RefreshAssassinCollisionFilter(Task& a_task, RE::Actor* a_agent, RE::Actor* a_target)
+		{
+			if (!kTryCollisionFilter) return;
+
+			if (a_task.targetCollisionMarked && a_task.targetCollisionBody) {
+				if (!BodyNoCollision(a_task.targetCollisionBody.get())) {
+					SetBodyNoCollision(a_task.targetCollisionBody.get(), true);
+					logs::info("task {}: collision filter kNoCollision re-asserted on target's bumped body",
+						a_task.id);
+				}
+			} else if (a_target && a_agent) {
+				if (auto body = BumpedBody(a_target); body) {
+					auto* ref = RE::TESHavokUtilities::FindCollidableRef(body->collidable);
+					if (ref && ref->GetFormID() == a_agent->GetFormID() && !BodyNoCollision(body.get())) {
+						SetBodyNoCollision(body.get(), true);
+						a_task.targetCollisionBody = body;
+						a_task.targetCollisionMarked = true;
+						logs::info("task {}: collision filter kNoCollision set on target's bumped body (agent {:08X})",
+							a_task.id, a_agent->GetFormID());
+					}
+				}
+			}
+
+			if (a_task.agentCollisionMarked && a_task.agentCollisionBody) {
+				if (!BodyNoCollision(a_task.agentCollisionBody.get())) {
+					SetBodyNoCollision(a_task.agentCollisionBody.get(), true);
+					logs::info("task {}: collision filter kNoCollision re-asserted on agent's bumped body",
+						a_task.id);
+				}
+			} else if (a_agent && a_target) {
+				if (auto body = BumpedBody(a_agent); body) {
+					auto* ref = RE::TESHavokUtilities::FindCollidableRef(body->collidable);
+					if (ref && ref->GetFormID() == a_target->GetFormID() && !BodyNoCollision(body.get())) {
+						SetBodyNoCollision(body.get(), true);
+						a_task.agentCollisionBody = body;
+						a_task.agentCollisionMarked = true;
+						logs::info("task {}: collision filter kNoCollision set on agent's bumped body (target {:08X})",
+							a_task.id, a_target->GetFormID());
+					}
+				}
+			}
+		}
+
+		void ClearAssassinCollisionFilter(Task& a_task)
+		{
+			const bool hadTarget = a_task.targetCollisionMarked;
+			const bool hadAgent = a_task.agentCollisionMarked;
+			if (hadTarget && a_task.targetCollisionBody) {
+				SetBodyNoCollision(a_task.targetCollisionBody.get(), false);
+			}
+			if (hadAgent && a_task.agentCollisionBody) {
+				SetBodyNoCollision(a_task.agentCollisionBody.get(), false);
+			}
+			a_task.targetCollisionBody.reset();
+			a_task.agentCollisionBody.reset();
+			a_task.targetCollisionMarked = false;
+			a_task.agentCollisionMarked = false;
+			if (hadTarget || hadAgent) {
+				logs::info("task {}: collision filter kNoCollision cleared (targetBumped={} agentBumped={})",
+					a_task.id, hadTarget, hadAgent);
+			}
+		}
+
+		// Heading-independent reposition for the final non-furniture retry
+		// round: place the target kKillTargetMoveDistance (100 u) past the
+		// executor along the vector from the target's old cramped spot through
+		// the executor (falling back to the executor's Z heading only when the
+		// pair is coincident), snap to navmesh, and face the target away from
+		// the executor for the backstab geometry. Game thread only.
+		bool TeleportTargetForFinalRetry(Task& a_task, RE::Actor* a_agent, RE::Actor* a_target)
+		{
+			if (!a_target || !a_agent || !a_target->Is3DLoaded() || !a_agent->Is3DLoaded() ||
+				!SameSpace(a_target, a_agent) || !IsRefInLoadedArea(a_agent)) {
+				return false;
+			}
+			const auto oldTp = a_target->GetPosition();
+			const auto ap = a_agent->GetPosition();
+			const float dx = ap.x - oldTp.x;
+			const float dy = ap.y - oldTp.y;
+			const float len = std::sqrt(dx * dx + dy * dy);
+			float dirX = 0.0f;
+			float dirY = 0.0f;
+			if (len > 1.0f) {
+				dirX = dx / len;
+				dirY = dy / len;
+			} else {
+				const float heading = a_agent->GetAngleZ();
+				dirX = std::sin(heading);
+				dirY = std::cos(heading);
+			}
+			const RE::NiPoint3 spot{
+				ap.x + dirX * kKillTargetMoveDistance,
+				ap.y + dirY * kKillTargetMoveDistance,
+				ap.z
+			};
+			a_target->MoveTo(a_agent);
+			a_target->SetPosition(spot, true);
+			const auto preSnap = a_target->GetPosition();
+			const bool snapped = a_target->MoveToNearestNavmesh(kNavmeshSnap);
+			const auto tp = a_target->GetPosition();
+			a_target->SetHeading(static_cast<float>(std::atan2(tp.x - ap.x, tp.y - ap.y)));
+			SendAnimEvent(a_target, "IdleForceDefaultState");
+			const float postDist = tp.GetDistance(ap);
+			const float snapDelta = tp.GetDistance(preSnap);
+			const float movedFromOld = tp.GetDistance(oldTp);
+			if (!snapped || postDist < 60.0f) {
+				logs::warn("task {}: final retry teleport tight/unsnapped for {} - old=({:.0f},{:.0f},{:.0f}) agent=({:.0f},{:.0f},{:.0f}) post=({:.0f},{:.0f},{:.0f}) postDist={:.0f}u moved={:.0f}u snapped={} snapDelta={:.0f}u",
+					a_task.id, a_task.targetName,
+					oldTp.x, oldTp.y, oldTp.z,
+					ap.x, ap.y, ap.z,
+					tp.x, tp.y, tp.z,
+					postDist, movedFromOld, snapped, snapDelta);
+			} else {
+				logs::info("task {}: final retry teleported {} behind {} - old=({:.0f},{:.0f},{:.0f}) agent=({:.0f},{:.0f},{:.0f}) post=({:.0f},{:.0f},{:.0f}) postDist={:.0f}u moved={:.0f}u snapped={} snapDelta={:.0f}u",
+					a_task.id, a_task.targetName, a_task.agentName,
+					oldTp.x, oldTp.y, oldTp.z,
+					ap.x, ap.y, ap.z,
+					tp.x, tp.y, tp.z,
+					postDist, movedFromOld, snapped, snapDelta);
+			}
+			return true;
+		}
+
 		void AnnounceAssassinateSuccess(const Task& a_task)
 		{
 			RE::SendHUDMessage::ShowHUDMessage(
@@ -3189,7 +3379,7 @@ namespace intellite::tasks
 		{
 			auto* agent  = RE::TESForm::LookupByID<RE::Actor>(a_task.agentFormID);
 			auto* player = RE::PlayerCharacter::GetSingleton();
-			const std::string msg = a_task.agentName + " is back: " + a_task.targetName +
+			const std::string msg = a_task.targetName +
 				" is still alive - the assassination failed.";
 			RE::SendHUDMessage::ShowHUDMessage(msg.c_str());
 			// A direct narration describing the attempt itself: the target
@@ -3313,8 +3503,9 @@ namespace intellite::tasks
 		{
 			auto* agent  = RE::TESForm::LookupByID<RE::Actor>(a_task.agentFormID);
 			auto* player = RE::PlayerCharacter::GetSingleton();
-			const std::string msg = a_task.agentName + " is back: " + a_task.targetName +
-				" could not be killed.";
+			const std::string msg = a_farAway
+				? (a_task.agentName + " is back: " + a_task.targetName + " could not be killed.")
+				: (a_task.targetName + " could not be killed.");
 			RE::SendHUDMessage::ShowHUDMessage(msg.c_str());
 			if (a_farAway) {
 				skyrimnet::DirectNarration(
@@ -3451,24 +3642,55 @@ namespace intellite::tasks
 					a_task.state = State::Executing;
 					return;
 				}
-				// The walk cases (a furniture-driven target or a stationary
-				// one) get the executor's close-in attempts FIRST: the target
-				// stands where it is while the pair is staged and the killmove
-				// is fired up to twice; only when the engine refuses those
-				// does the target get sent walking toward the player and the
-				// kill retried on the move. A target already walking is NOT
-				// redirected - it is stopped and held where it stands.
+				if (movement::StartAssassinHold(agent, target)) {
+					a_task.stanceHeld = true;
+					a_task.holdSuspended = false;
+					a_task.stanceReassertReal = RealSeconds() + kStanceReassertSeconds;
+					logs::info("task {}: {} holds the assassination stance on {}",
+						a_task.id, a_task.agentName, a_task.targetName);
+				} else {
+					a_task.stanceHeld = false;
+					a_task.holdSuspended = false;
+					a_task.stanceReassertReal = 0.0f;
+					logs::warn("task {}: assassin hold package unavailable for {}",
+						a_task.id, a_task.agentName);
+				}
+				ClearAssassinCollisionFilter(a_task);
+				RefreshAssassinCollisionFilter(a_task, agent, target);
+				// A furniture-driven target keeps the existing 2 close-in
+				// attempts followed by a walk-clear toward the player. A
+				// non-furniture mortal target uses the 3+2+2 attempt/drive
+				// schedule while the executor holds the assassination stance.
 				if (!a_task.killWalkPending) {
 					(void)DriveTargetOffFurniture(a_task, target, player, false);
 				}
-				const bool walkCase = a_task.killWalkPending || !target->IsMoving();
-				if (walkCase) {
+				const bool furnitureCase = a_task.killWalkPending;
+				if (furnitureCase) {
 					// Drop any furniture-drive walk: the target stands where
 					// the drive left it for the close-in attempts.
 					movement::StopTravel(target);
 					a_task.killWalkPending = false;
 					a_task.killWalkAfterAttempts = true;
 					a_task.killEarlyAttemptsLeft = 1;
+					a_task.killRetryActive = false;
+					a_task.killRetryAttemptsLeft = 0;
+					a_task.killRetryDriveRoundsLeft = 0;
+					a_task.killRetryDriving = false;
+					a_task.killRetryDriveEndReal = 0.0f;
+					a_task.killDrivePkgActive = false;
+					a_task.killRetryTeleport = false;
+					a_task.killRetryTeleportApplied = false;
+				} else {
+					a_task.killWalkAfterAttempts = false;
+					a_task.killEarlyAttemptsLeft = 0;
+					a_task.killRetryActive = true;
+					a_task.killRetryAttemptsLeft = kKillInitialAttempts;
+					a_task.killRetryDriveRoundsLeft = kKillDriveRounds;
+					a_task.killRetryDriving = false;
+					a_task.killRetryDriveEndReal = 0.0f;
+					a_task.killDrivePkgActive = false;
+					a_task.killRetryTeleport = false;
+					a_task.killRetryTeleportApplied = false;
 				}
 				// Hold the target from the moment the executor is upon it:
 				// movement AND actions (the engine's restraint), so a farm
@@ -3913,18 +4135,41 @@ namespace intellite::tasks
 				SetAliasProtected(target, false);
 			}
 
+			RefreshAssassinCollisionFilter(a_task, agent, target);
+
+			// Stance keep-alive: re-assert the assassin hold package if a
+			// schedule/dialogue/engine event displaced it while the scene is
+			// between dispatches.
+			const RE::FormID holdPkgForm = movement::AssassinHoldPackageFormID();
+			if (a_task.stanceHeld && !a_task.holdSuspended && !a_task.killPending &&
+				agent && target && agent->Is3DLoaded() && target->Is3DLoaded() &&
+				SameSpace(agent, target) &&
+				!agent->IsInKillMove() && !target->IsInKillMove() &&
+				!a_task.killWaitingEngage && a_task.killPrepareEndReal == 0.0f &&
+				!a_task.killEngaged && !a_task.killCleanupWaiting && !a_task.swingPending &&
+				holdPkgForm != 0 && RealSeconds() >= a_task.stanceReassertReal &&
+				RunningPackageOf(agent).form != holdPkgForm) {
+				const RE::FormID curPkg = RunningPackageOf(agent).form;
+				if (movement::StartAssassinHold(agent, target)) {
+					a_task.stanceReassertReal = RealSeconds() + kStanceReassertSeconds;
+					logs::info("task {}: assassin hold package {:08X} not running (current {:08X}) - re-issued",
+						a_task.id, holdPkgForm, curPkg);
+				}
+			}
+
 			// The anti-routine pulse: while the scene stages, keep the target
 			// out of its furniture/idle routine and out of a walk-away. It is
 			// suspended while a dispatch is outstanding (killWaitingEngage)
 			// and after an engagement, so a just-accepted killmove is never
-			// touched. During the walk phase only the furniture check runs
-			// (the walk itself is that phase's job). It is also suspended for
-			// the whole one-package essential run: the swing package is already
-			// inbound, so the target must not be StopMoving/StopCurrentIdle'd
-			// every tick.
+			// touched. During the walk or retry-drive phase only the furniture
+			// check runs (the walk itself is that phase's job). It is also
+			// suspended for the whole one-package essential run: the swing
+			// package is already inbound, so the target must not be
+			// StopMoving/StopCurrentIdle'd every tick.
 			if (target && a_task.killCommitted && !a_task.killWaitingEngage &&
 				!a_task.killEngaged && !a_task.swingPending && !target->IsInKillMove()) {
-				PulseTargetHold(a_task, target, !a_task.killWalkPending);
+				PulseTargetHold(a_task, target,
+					!a_task.killWalkPending && (!a_task.killRetryDriving || a_task.killRetryTeleportApplied));
 			}
 
 			// Essential-target swing: a killmove on an essential target can
@@ -3975,6 +4220,7 @@ namespace intellite::tasks
 				a_task.swingPending = false;
 				movement::StopSwing(agent);
 				StopAllLegs(a_task);
+				ClearAssassinCollisionFilter(a_task);
 				CleanupKillDagger(a_task, agent);
 				ReleaseSneak(a_task, agent);
 				ReleaseTargetHold(a_task, target);
@@ -4005,6 +4251,142 @@ namespace intellite::tasks
 				}
 				a_task.state = State::Done;
 				return true;
+			}
+
+			// Non-furniture 3+2+2 retry drive: after a refused attempt burst,
+			// the target hold was released on the previous tick; on the first
+			// drive tick start the target walking toward the player for 2 s
+			// (or, on the final drive round, teleport the target 100 u behind
+			// the executor away from the cramped spot and hold for 2 s) while
+			// the executor keeps its assassination stance, then stop the walk,
+			// re-hold/stage the pair, and run the next 2-attempt burst.
+			if (a_task.killRetryDriving) {
+				if (!target || target->IsDead() || !target->Is3DLoaded() || !SameSpace(target, player)) {
+					if (a_task.killDrivePkgActive) {
+						movement::StopTravel(target);
+						a_task.killDrivePkgActive = false;
+					}
+					a_task.killRetryTeleport = false;
+					a_task.killRetryTeleportApplied = false;
+					a_task.killRetryDriving = false;
+					a_task.killRetryDriveEndReal = 0.0f;
+					a_task.killRetryActive = false;
+					a_task.killRetryAttemptsLeft = 0;
+					a_task.killRetryDriveRoundsLeft = 0;
+					a_task.killPending = false;
+					a_task.killPrepareEndReal = 0.0f;
+					a_task.killWaitingEngage = false;
+					a_task.killBeatEndReal = 0.0f;
+					a_task.killAttempted = true;
+					a_task.killConfirmEndReal = 0.0f;
+				} else if (!a_task.killDrivePkgActive && !a_task.killRetryTeleportApplied) {
+					if (auto* proc = target->GetActorRuntimeData().currentProcess) {
+						proc->StopCurrentIdle(target, true);
+						proc->ClearFurniture(target);
+					}
+					SendAnimEvent(target, "IdleForceDefaultState");
+					if (a_task.killRetryTeleport) {
+						a_task.killRetryTeleport = false;
+						if (TeleportTargetForFinalRetry(a_task, agent, target)) {
+							HoldTargetForKill(a_task, target);
+							if (agent) {
+								FaceForKill(agent, target, true);
+							}
+							const auto p = target->GetPosition();
+							a_task.killWalkStartX = p.x;
+							a_task.killWalkStartY = p.y;
+							a_task.killWalkStartZ = p.z;
+							a_task.killRetryTeleportApplied = true;
+							a_task.killRetryDriveEndReal = RealSeconds() + kKillDriveSeconds;
+							a_task.killWalkEvalLeft = 0;
+							a_task.killWalkEvalAtReal = 0.0f;
+							return false;
+						}
+						logs::warn("task {}: final retry teleport failed for {} - falling back to retry walk",
+							a_task.id, a_task.targetName);
+					}
+					(void)target->MoveToNearestNavmesh(kNavmeshSnap);
+					const bool startOk = movement::StartTravel(target, player, false, true);
+					const float pairDist = agent ? agent->GetPosition().GetDistance(target->GetPosition()) : -1.0f;
+					const float toPlayer = player ? target->GetPosition().GetDistance(player->GetPosition()) : -1.0f;
+					logs::info("task {}: retry drive start (roundsLeft={}) - startOk={} pairDist={:.0f}u toPlayer={:.0f}u agent[{}] target[{}]",
+						a_task.id, a_task.killRetryDriveRoundsLeft, startOk, pairDist, toPlayer,
+						ActorKillState(agent), ActorKillState(target));
+					if (startOk) {
+						const auto p = target->GetPosition();
+						a_task.killWalkStartX = p.x;
+						a_task.killWalkStartY = p.y;
+						a_task.killWalkStartZ = p.z;
+						a_task.killDrivePkgActive = true;
+						a_task.killRetryDriveEndReal = RealSeconds() + kKillDriveSeconds;
+						a_task.killWalkEvalLeft = 2;
+						a_task.killWalkEvalAtReal = RealSeconds() + 0.3f;
+						return false;
+					}
+					logs::warn("task {}: retry drive StartTravel failed for {} - running next attempt burst immediately",
+						a_task.id, a_task.targetName);
+					a_task.killRetryTeleport = false;
+					a_task.killRetryTeleportApplied = false;
+					a_task.killRetryDriving = false;
+					a_task.killRetryDriveEndReal = 0.0f;
+					a_task.killRetryAttemptsLeft = kKillDriveAttempts;
+					a_task.killReformUsed = false;
+					if (a_task.holdSuspended && agent) {
+						if (movement::StartAssassinHold(agent, target)) {
+							a_task.stanceHeld = true;
+							a_task.stanceReassertReal = RealSeconds() + kStanceReassertSeconds;
+						}
+						a_task.holdSuspended = false;
+					}
+					SendAnimEvent(target, "IdleForceDefaultState");
+					KillMovePrepare(a_task, agent, target);
+					a_task.killPrepareEndReal = RealSeconds() + kKillSettleSeconds;
+					return false;
+				} else {
+					if (a_task.killDrivePkgActive && a_task.killWalkEvalLeft > 0 &&
+						RealSeconds() >= a_task.killWalkEvalAtReal) {
+						target->EvaluatePackage(true, false);
+						--a_task.killWalkEvalLeft;
+						a_task.killWalkEvalAtReal = (a_task.killWalkEvalLeft > 0) ? RealSeconds() + 1.2f : 0.0f;
+					}
+					if (RealSeconds() < a_task.killRetryDriveEndReal) {
+						return false;
+					}
+					const bool wasTeleport = a_task.killRetryTeleportApplied;
+					const auto p = target->GetPosition();
+					const float dx = p.x - a_task.killWalkStartX;
+					const float dy = p.y - a_task.killWalkStartY;
+					const float dz = p.z - a_task.killWalkStartZ;
+					const float moved = std::sqrt(dx * dx + dy * dy + dz * dz);
+					const auto pkg = RunningPackageOf(target);
+					const float pairDist = agent ? agent->GetPosition().GetDistance(target->GetPosition()) : -1.0f;
+					const float toPlayer = player ? target->GetPosition().GetDistance(player->GetPosition()) : -1.0f;
+					logs::info("task {}: retry {} finished for {} - moved {:.0f}u pkg {:08X}/{} pairDist={:.0f}u toPlayer={:.0f}u target[{}]",
+						a_task.id, wasTeleport ? "teleport hold" : "drive", a_task.targetName,
+						moved, pkg.form, pkg.id, pairDist, toPlayer,
+						ActorKillState(target));
+					movement::StopTravel(target);
+					a_task.killDrivePkgActive = false;
+					a_task.killRetryTeleport = false;
+					a_task.killRetryTeleportApplied = false;
+					a_task.killRetryDriving = false;
+					a_task.killRetryDriveEndReal = 0.0f;
+					a_task.killWalkEvalLeft = 0;
+					a_task.killWalkEvalAtReal = 0.0f;
+					a_task.killRetryAttemptsLeft = kKillDriveAttempts;
+					a_task.killReformUsed = false;
+					if (a_task.holdSuspended && agent) {
+						if (movement::StartAssassinHold(agent, target)) {
+							a_task.stanceHeld = true;
+							a_task.stanceReassertReal = RealSeconds() + kStanceReassertSeconds;
+						}
+						a_task.holdSuspended = false;
+					}
+					SendAnimEvent(target, "IdleForceDefaultState");
+					KillMovePrepare(a_task, agent, target);
+					a_task.killPrepareEndReal = RealSeconds() + kKillSettleSeconds;
+					return false;
+				}
 			}
 
 			// Phase 1a (furniture walk): the target is walking clear of its
@@ -4152,6 +4534,10 @@ namespace intellite::tasks
 					// killmove pipeline.
 					if (IsTargetEssential(target)) {
 						ReleaseTargetHold(a_task, target);
+						ClearAssassinCollisionFilter(a_task);
+						a_task.stanceHeld = false;
+						a_task.holdSuspended = false;
+						a_task.stanceReassertReal = 0.0f;
 						if (movement::StartSwing(agent, target)) {
 							logs::info("task {}: {} is essential - swinging once (no killmove, {:.0f}u)",
 								a_task.id, a_task.targetName, dist);
@@ -4176,9 +4562,20 @@ namespace intellite::tasks
 						a_task.killPrepareEndReal = RealSeconds() + kKillSettleSeconds;
 						return false;
 					}
+					if (kSuspendHoldForDispatch && a_task.stanceHeld && !a_task.holdSuspended) {
+						movement::StopAssassinHold(agent);
+						agent->StopMoving(0.0f);
+						a_task.holdSuspended = true;
+						if (!agent->IsSneaking()) {
+							SendAnimEvent(agent, "sneakStart");
+						}
+					}
 					a_task.killVmResult.reset();
 					LogKillState("dispatch", a_task, agent, target);
 					a_task.killPlayed = PlayKillMove(a_task, agent, target);
+					if (a_task.killRetryActive && a_task.killRetryAttemptsLeft > 0) {
+						--a_task.killRetryAttemptsLeft;
+					}
 				} else {
 					a_task.killPlayed = false;
 				}
@@ -4214,6 +4611,7 @@ namespace intellite::tasks
 					if (inKillMove) {
 						BeginBountyGuard();
 						a_task.killEngaged = true;
+						a_task.holdSuspended = false;
 						a_task.killEngagedAtReal = RealSeconds();
 						logs::info("task {}: killmove engaged after {:.2f}s (dispatch {})",
 							a_task.id, RealSeconds() - a_task.killDispatchReal,
@@ -4225,67 +4623,113 @@ namespace intellite::tasks
 						// target (the deferred kill never queued): stop
 						// waiting and let the verdict run.
 						a_task.killWaitingEngage = false;
+						a_task.holdSuspended = false;
+						if (a_task.killDrivePkgActive) {
+							movement::StopTravel(target);
+							a_task.killDrivePkgActive = false;
+						}
+						a_task.killRetryTeleport = false;
+						a_task.killRetryTeleportApplied = false;
+						a_task.killRetryDriving = false;
+						a_task.killRetryDriveEndReal = 0.0f;
+						a_task.killRetryActive = false;
+						a_task.killRetryAttemptsLeft = 0;
+						a_task.killRetryDriveRoundsLeft = 0;
 					} else if (vmRefused ||
 						RealSeconds() >= a_task.killEngageDeadlineReal) {
+						const int maxDispatches = a_task.killRetryActive
+							? (kKillInitialAttempts + kKillDriveRounds * kKillDriveAttempts)
+							: kKillMaxDispatches;
 						logs::info("task {}: killmove did not engage (dispatch {} of {}, VM {}) - re-staging",
-							a_task.id, a_task.killDispatchCount, kKillMaxDispatches,
+							a_task.id, a_task.killDispatchCount, maxDispatches,
 							!vmHave ? "no result yet" :
 								(vmRes->result ? "accepted" : "refused"));
 						LogKillState("not-engaged", a_task, agent, target);
 						a_task.killWaitingEngage = false;
-						if (a_task.killWalkAfterAttempts) {
-							if (a_task.killEarlyAttemptsLeft > 0) {
-								// Close-in attempt two (the same preparation).
-								--a_task.killEarlyAttemptsLeft;
+						if (a_task.holdSuspended && agent && target) {
+							if (movement::StartAssassinHold(agent, target)) {
+								a_task.stanceHeld = true;
+								a_task.stanceReassertReal = RealSeconds() + kStanceReassertSeconds;
+							}
+							a_task.holdSuspended = false;
+						}
+						if (a_task.killRetryActive) {
+							if (a_task.killRetryAttemptsLeft > 0) {
 								SendAnimEvent(target, "IdleForceDefaultState");
 								KillMovePrepare(a_task, agent, target);
 								a_task.killPrepareEndReal = RealSeconds() + kKillSettleSeconds;
 								return false;
 							}
-							// Both close-in attempts were refused: send the
-							// target walking toward the player (the movement
-							// route) and take the kill once it has really moved.
-							a_task.killWalkAfterAttempts = false;
-							if (movement::StartTravel(target, player, false, true)) {
-								const auto p = target->GetPosition();
-								a_task.killWalkPending = true;
-								a_task.killWalkHardCapReal = RealSeconds() + kKillWalkHardCapSeconds;
-								a_task.killWalkLastProgressReal = RealSeconds();
-								a_task.killWalkProgressX = p.x;
-								a_task.killWalkProgressY = p.y;
-								a_task.killWalkProgressZ = p.z;
-								a_task.killWalkStartX = p.x;
-								a_task.killWalkStartY = p.y;
-								a_task.killWalkStartZ = p.z;
-								a_task.killWalkRetargets = 0;
-								a_task.killWalkEvalLeft = 2;
-								a_task.killWalkEvalAtReal = RealSeconds() + 0.3f;
-								a_task.killWalkStartReal = RealSeconds();
-								a_task.killWalkPkgLogged = false;
-								logs::info("task {}: {} walks clear for the kill (after the refused attempts)",
-									a_task.id, a_task.targetName);
+							if (a_task.killRetryDriveRoundsLeft > 0) {
+								--a_task.killRetryDriveRoundsLeft;
+								a_task.killRetryTeleport = kTryRetryTeleport && (a_task.killRetryDriveRoundsLeft == 0);
+								a_task.killRetryTeleportApplied = false;
+								ReleaseTargetHold(a_task, target);
+								a_task.killRetryDriving = true;
+								a_task.killRetryDriveEndReal = 0.0f;
+								a_task.killDrivePkgActive = false;
+								logs::info("task {}: killmove burst refused - {} {} for {:.1f}s (roundsLeft={})",
+									a_task.id,
+									a_task.killRetryTeleport ? "teleporting" : "driving",
+									a_task.targetName, kKillDriveSeconds, a_task.killRetryDriveRoundsLeft);
 								return false;
 							}
-							logs::warn("IntelLite tasks: task {}: walk backend unavailable after refused attempts - continuing the attempts",
-								a_task.id);
-						}
-						const float pairDist = agent->GetPosition().GetDistance(target->GetPosition());
-						if (pairDist > kKillMaxPreDispatchDistance) {
-							// The target has left the staging envelope: chasing
-							// it with more dispatches only drags the pair
-							// apart. End the
-							// attempts; the verdict's re-approach handles it.
-							logs::info("task {}: the pair drifted {:.0f}u apart - ending the attempts",
-								a_task.id, pairDist);
-						} else if (a_task.killDispatchCount < kKillMaxDispatches) {
-							// Re-assert the victim's clean state for the next
-							// attempt: a refusal usually means the engine did
-							// not take the victim's animation state, and a
-							// fresh reset widens the window.
-							SendAnimEvent(target, "IdleForceDefaultState");
-							KillMovePrepare(a_task, agent, target);
-							a_task.killPrepareEndReal = RealSeconds() + kKillSettleSeconds;
-							return false;
+							logs::info("task {}: all {} killmove attempts refused for {} - ending scene",
+								a_task.id, a_task.killDispatchCount, a_task.targetName);
+						} else {
+							if (a_task.killWalkAfterAttempts) {
+								if (a_task.killEarlyAttemptsLeft > 0) {
+									// Close-in attempt two (the same preparation).
+									--a_task.killEarlyAttemptsLeft;
+									SendAnimEvent(target, "IdleForceDefaultState");
+									KillMovePrepare(a_task, agent, target);
+									a_task.killPrepareEndReal = RealSeconds() + kKillSettleSeconds;
+									return false;
+								}
+								// Both close-in attempts were refused: send the
+								// target walking toward the player (the movement
+								// route) and take the kill once it has really moved.
+								a_task.killWalkAfterAttempts = false;
+								if (movement::StartTravel(target, player, false, true)) {
+									const auto p = target->GetPosition();
+									a_task.killWalkPending = true;
+									a_task.killWalkHardCapReal = RealSeconds() + kKillWalkHardCapSeconds;
+									a_task.killWalkLastProgressReal = RealSeconds();
+									a_task.killWalkProgressX = p.x;
+									a_task.killWalkProgressY = p.y;
+									a_task.killWalkProgressZ = p.z;
+									a_task.killWalkStartX = p.x;
+									a_task.killWalkStartY = p.y;
+									a_task.killWalkStartZ = p.z;
+									a_task.killWalkRetargets = 0;
+									a_task.killWalkEvalLeft = 2;
+									a_task.killWalkEvalAtReal = RealSeconds() + 0.3f;
+									a_task.killWalkStartReal = RealSeconds();
+									a_task.killWalkPkgLogged = false;
+									logs::info("task {}: {} walks clear for the kill (after the refused attempts)",
+										a_task.id, a_task.targetName);
+									return false;
+								}
+								logs::warn("IntelLite tasks: task {}: walk backend unavailable after refused attempts - continuing the attempts",
+									a_task.id);
+							}
+							const float pairDist = agent->GetPosition().GetDistance(target->GetPosition());
+							if (pairDist > kKillMaxPreDispatchDistance) {
+								// The target has left the staging envelope: chasing
+								// it with more dispatches only drags the pair
+								// apart. End the attempts.
+								logs::info("task {}: the pair drifted {:.0f}u apart - ending the attempts",
+									a_task.id, pairDist);
+							} else if (a_task.killDispatchCount < kKillMaxDispatches) {
+								// Re-assert the victim's clean state for the next
+								// attempt: a refusal usually means the engine did
+								// not take the victim's animation state, and a
+								// fresh reset widens the window.
+								SendAnimEvent(target, "IdleForceDefaultState");
+								KillMovePrepare(a_task, agent, target);
+								a_task.killPrepareEndReal = RealSeconds() + kKillSettleSeconds;
+								return false;
+							}
 						}
 					}
 				} else if (!a_task.killReleased && !inKillMove) {
@@ -4348,61 +4792,26 @@ namespace intellite::tasks
 					KillTarget(target, agent);
 				}
 			}
-			// A refused scene gets one fresh encounter before the failure is
-			// final: a new approach (a fresh drive + hold + scene) is what
-			// converts a refusal. The dagger and the target hold are kept for
-			// the retry.
-			if (target && !target->IsDead() && !IsTargetEssential(target) && !a_task.reapproached) {
-				a_task.reapproached = true;
-				logs::info("task {}: kill window refused - re-approaching {} once",
-					a_task.id, a_task.targetName);
-				StopAllLegs(a_task, false);
-				a_task.killCommitted = false;
-				a_task.killPending = false;
-				a_task.killPlayed = false;
-				a_task.killAttempted = false;
+			if (a_task.killWalkPending || a_task.killDrivePkgActive) {
+				movement::StopTravel(target);
 				a_task.killWalkPending = false;
-				a_task.killFurniture = false;
-				a_task.killFurnitureFormID = 0;
-				a_task.furnitureStandUpReal = 0.0f;
-				a_task.furnitureDrivePending = false;
-				a_task.killEngaged = false;
-				a_task.killReleased = false;
-				a_task.killWaitingEngage = false;
-				a_task.killDispatchCount = 0;
-				a_task.killDispatchReal = 0.0f;
-				a_task.killEngagedAtReal = 0.0f;
-				a_task.killReformUsed = false;
-				a_task.killWalkAfterAttempts = false;
-				a_task.killEarlyAttemptsLeft = 0;
-				a_task.killWalkRetargets = 0;
-				a_task.killWalkEvalLeft = 0;
-				a_task.killWalkEvalAtReal = 0.0f;
-				a_task.killPulseLogged = false;
-				a_task.killPrepareEndReal = 0.0f;
-				a_task.killBeatEndReal = 0.0f;
-				a_task.killEngageDeadlineReal = 0.0f;
-				a_task.killConfirmEndReal = 0.0f;
-				a_task.killCleanupWaiting = false;
-				a_task.killCleanupDeadlineReal = 0.0f;
-				a_task.killVerdictGraceEndReal = 0.0f;
-				a_task.swingPending = false;
-				a_task.swingSawAttack = false;
-				a_task.swingAttackSeenReal = 0.0f;
-				a_task.swingCheckReal = 0.0f;
-				a_task.swingEndReal = 0.0f;
-				a_task.swingReissues = 0;
-				a_task.swingReissueReal = 0.0f;
-				a_task.killVmResult.reset();
-				StartLeg(a_task.agentLeg, agent, target, nullptr, true);
-				a_task.dueGameTime = a_task.agentLeg.dueGameTime;
-				// A fresh re-approach is still the assassinate approach: it must
-				// reach real proximity, not just the target's interior cell.
-				a_task.agentLeg.strictArrival = true;
-				a_task.state = State::AgentTravel;
-				return true;
+				a_task.killDrivePkgActive = false;
 			}
+			a_task.killRetryTeleport = false;
+			a_task.killRetryTeleportApplied = false;
+			a_task.killRetryDriving = false;
+			a_task.killRetryDriveEndReal = 0.0f;
+			a_task.killRetryActive = false;
+			a_task.killRetryAttemptsLeft = 0;
+			a_task.killRetryDriveRoundsLeft = 0;
 			StopAllLegs(a_task);
+			if (a_task.stanceHeld || a_task.holdSuspended) {
+				movement::StopAssassinHold(agent);
+				a_task.stanceHeld = false;
+				a_task.holdSuspended = false;
+			}
+			a_task.stanceReassertReal = 0.0f;
+			ClearAssassinCollisionFilter(a_task);
 			// Undo the scene's weapon: sheathe, unequip the spawned dagger,
 			// then remove it (both the success and the failure paths).
 			CleanupKillDagger(a_task, agent);
@@ -4475,10 +4884,22 @@ namespace intellite::tasks
 			if (a_task.type != Type::Assassinate) return;
 			a_task.furnitureStandUpReal = 0.0f;
 			a_task.furnitureDrivePending = false;
+			a_task.stanceHeld = false;
+			a_task.holdSuspended = false;
+			a_task.stanceReassertReal = 0.0f;
+			a_task.killRetryActive = false;
+			a_task.killRetryAttemptsLeft = 0;
+			a_task.killRetryDriveRoundsLeft = 0;
+			a_task.killRetryDriving = false;
+			a_task.killRetryDriveEndReal = 0.0f;
+			a_task.killDrivePkgActive = false;
+			a_task.killRetryTeleport = false;
+			a_task.killRetryTeleportApplied = false;
 			if (a_task.killWalkPending) {
 				movement::StopTravel(a_target);
 				a_task.killWalkPending = false;
 			}
+			ClearAssassinCollisionFilter(a_task);
 			ReleaseTargetHold(a_task, a_target);
 			RestoreProtectedFlag(a_task);
 			CleanupKillDagger(a_task, a_agent);
@@ -5355,6 +5776,23 @@ namespace intellite::tasks
 			return a_state == State::Done || a_state == State::Cancelled || a_state == State::Failed;
 		}
 
+		// True when another non-finished task is currently driving the same
+		// target actor (killDrivePkgActive or killWalkPending), so stopping
+		// this task's retry drive must not clobber the other task's active
+		// walk override. Game thread only.
+		bool OtherTaskDrivingTarget(std::uint32_t a_excludeTaskID, std::uint32_t a_targetFormID)
+		{
+			if (a_targetFormID == 0) return false;
+			for (const auto& t : g_tasks) {
+				if (t.id == a_excludeTaskID || IsFinished(t.state)) continue;
+				if (t.targetFormID == a_targetFormID &&
+					(t.killDrivePkgActive || t.killWalkPending)) {
+					return true;
+				}
+			}
+			return false;
+		}
+
 		// Game thread. The shared cancellation body used by the panel/action
 		// cancels and by the supersede path: refuses a committed assassination
 		// (logs, returns false - it is left running); otherwise releases the
@@ -5411,6 +5849,19 @@ namespace intellite::tasks
 				movement::StopTravel(target);
 				a_task.killWalkPending = false;
 			}
+			if (a_task.killDrivePkgActive) {
+				if (!OtherTaskDrivingTarget(a_task.id, a_task.targetFormID)) {
+					movement::StopTravel(target);
+				}
+				a_task.killDrivePkgActive = false;
+			}
+			a_task.killRetryTeleport = false;
+			a_task.killRetryTeleportApplied = false;
+			a_task.killRetryDriving = false;
+			a_task.killRetryDriveEndReal = 0.0f;
+			a_task.killRetryActive = false;
+			a_task.killRetryAttemptsLeft = 0;
+			a_task.killRetryDriveRoundsLeft = 0;
 			if (a_task.targetSandboxed) {
 				ReleaseActor(target);
 				a_task.targetSandboxed = false;
@@ -5419,6 +5870,13 @@ namespace intellite::tasks
 				ReleaseTargetHold(a_task, target);
 			}
 			if (a_task.type == Type::Assassinate) {
+				ClearAssassinCollisionFilter(a_task);
+				if (a_task.stanceHeld || a_task.holdSuspended) {
+					movement::StopAssassinHold(agent);
+					a_task.stanceHeld = false;
+					a_task.holdSuspended = false;
+				}
+				a_task.stanceReassertReal = 0.0f;
 				if (a_task.swingPending) {
 					if (!a_keepAgentTravel) {
 						movement::StopSwing(agent);
@@ -5588,10 +6046,14 @@ namespace intellite::tasks
 			bool confirmPrompts = true;  // SETT default when the record is absent
 
 			RestoreAllProtectedFlags();
+			for (auto& t : g_tasks) {
+				ClearAssassinCollisionFilter(t);
+			}
 			g_bountySnapshot.clear();
 			g_bountyGuardUntil = 0.0f;
 			npc_index::ResetLoaded();
 			g_pendingHoldReleases.clear();
+			g_pendingStanceReleases.clear();
 			g_pendingWeaponReleases.clear();
 
 			std::uint32_t type = 0;
@@ -5710,7 +6172,11 @@ namespace intellite::tasks
 						}
 					}
 					t.weaponDrawnByUs = (t.spawnedWeaponFormID != 0);
-					auto stashWeaponForRelease = [&t, agentTrusted, weaponTrusted]() {
+					auto stashWeaponForRelease = [&t, agentTrusted, weaponTrusted, typeByte]() {
+						if (agentTrusted && t.agentFormID != 0 &&
+							typeByte == static_cast<std::uint8_t>(Type::Assassinate)) {
+							g_pendingStanceReleases.push_back(t.agentFormID);
+						}
 						if (agentTrusted && weaponTrusted &&
 							t.spawnedWeaponFormID != 0 && t.agentFormID != 0) {
 							g_pendingWeaponReleases.push_back({ t.agentFormID, t.spawnedWeaponFormID });
@@ -5901,6 +6367,9 @@ namespace intellite::tasks
 		void RevertCallback(SKSE::SerializationInterface* /*a_intfc*/)
 		{
 			RestoreAllProtectedFlags();
+			for (auto& t : g_tasks) {
+				ClearAssassinCollisionFilter(t);
+			}
 			g_bountySnapshot.clear();
 			g_bountyGuardUntil = 0.0f;
 			npc_index::ResetLoaded();
@@ -5909,6 +6378,7 @@ namespace intellite::tasks
 			g_pendingCancelAgent.clear();
 			g_cancelAll = false;
 			g_pendingHoldReleases.clear();
+			g_pendingStanceReleases.clear();
 			g_pendingWeaponReleases.clear();
 			g_nextID = 1;
 			g_confirmPrompts.store(true, std::memory_order_relaxed);  // Revert resets the setting to its default
@@ -6646,13 +7116,27 @@ namespace intellite::tasks
 			for (auto& t : g_tasks) {
 				auto* agent = RE::TESForm::LookupByID<RE::Actor>(t.agentFormID);
 				movement::StopTravel(agent);
+				t.stanceHeld = false;
+				t.holdSuspended = false;
+				t.stanceReassertReal = 0.0f;
+				t.killRetryActive = false;
+				t.killRetryAttemptsLeft = 0;
+				t.killRetryDriveRoundsLeft = 0;
+				t.killRetryDriving = false;
+				t.killRetryDriveEndReal = 0.0f;
+				t.killDrivePkgActive = false;
+				t.killRetryTeleport = false;
+				t.killRetryTeleportApplied = false;
+				ClearAssassinCollisionFilter(t);
 				if (t.type == Type::Fetch) ClearTargetHold(agent);
 				auto* target = RE::TESForm::LookupByID<RE::Actor>(t.targetFormID);
 				movement::StopTravel(target);
 				// A SetDontMove hold is saved on the actor and must not
 				// survive a reload (the runtime flag that would release it
 				// does not).
-				if (t.type == Type::Assassinate) ClearTargetHold(target);
+				if (t.type == Type::Assassinate) {
+					ClearTargetHold(target);
+				}
 				// A persisted linger cannot resume its sandbox: release it
 				// and finish the task (one-shot release after a load).
 				if (t.state == State::Lingering) {
@@ -6676,6 +7160,13 @@ namespace intellite::tasks
 				ClearTargetHold(RE::TESForm::LookupByID<RE::Actor>(id));
 			}
 			g_pendingHoldReleases.clear();
+			for (const auto id : g_pendingStanceReleases) {
+				if (auto* a = RE::TESForm::LookupByID<RE::Actor>(id)) {
+					movement::StopTravel(a);
+					movement::StopAssassinHold(a);
+				}
+			}
+			g_pendingStanceReleases.clear();
 			for (const auto& pw : g_pendingWeaponReleases) {
 				ReleasePendingWeapon(pw.agent, pw.weapon);
 			}
@@ -6785,6 +7276,19 @@ namespace intellite::tasks
 				movement::StopTravel(RE::TESForm::LookupByID<RE::Actor>(t.targetFormID));
 				t.killWalkPending = false;
 			}
+			if (t.killDrivePkgActive) {
+				if (!OtherTaskDrivingTarget(t.id, t.targetFormID)) {
+					movement::StopTravel(RE::TESForm::LookupByID<RE::Actor>(t.targetFormID));
+				}
+				t.killDrivePkgActive = false;
+			}
+			t.killRetryTeleport = false;
+			t.killRetryTeleportApplied = false;
+			t.killRetryDriving = false;
+			t.killRetryDriveEndReal = 0.0f;
+			t.killRetryActive = false;
+			t.killRetryAttemptsLeft = 0;
+			t.killRetryDriveRoundsLeft = 0;
 			if (t.targetSandboxed) {
 				ReleaseActor(RE::TESForm::LookupByID<RE::Actor>(t.targetFormID));
 				t.targetSandboxed = false;
@@ -6797,6 +7301,13 @@ namespace intellite::tasks
 			// helpers are idempotent, so a scene that already cleaned up no-ops.
 			if (t.type == Type::Assassinate) {
 				auto* daggerAgent = RE::TESForm::LookupByID<RE::Actor>(t.agentFormID);
+				ClearAssassinCollisionFilter(t);
+				if (t.stanceHeld || t.holdSuspended) {
+					movement::StopAssassinHold(daggerAgent);
+					t.stanceHeld = false;
+					t.holdSuspended = false;
+				}
+				t.stanceReassertReal = 0.0f;
 				if (t.swingPending) {
 					movement::StopSwing(daggerAgent);
 					t.swingPending = false;

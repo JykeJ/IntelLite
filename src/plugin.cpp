@@ -68,7 +68,7 @@ namespace
 SKSEPluginLoad(const SKSE::LoadInterface* a_skse)
 {
 	SKSE::Init(a_skse);
-	logs::info("IntelLite v{} loaded", "0.1.0");
+	logs::info("IntelLite v{} loaded", "0.1.1");
 	intellite::tasks::RegisterSerialization();
 	if (auto* msg = SKSE::GetMessagingInterface()) {
 		msg->RegisterListener(OnMessage);
